@@ -5,7 +5,7 @@ parser.out: HTTP_Parser.cpp
 	g++ -Wall -c HTTP_Parser.cpp -o parser.out
 
 proxy.out : Proxy.cpp
-	g++ -Wall -c Proxy.cpp -o proxy.out
+	g++ -Wall -lnsl -lsocket -lresolv -c Proxy.cpp -o proxy.out
 
 cache.out : Cache.cpp
 	g++ -Wall -c Cache.cpp -o cache.out
