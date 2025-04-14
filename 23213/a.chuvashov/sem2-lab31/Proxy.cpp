@@ -1,5 +1,5 @@
 #include "Proxy.h"
-#include "HTTP_Parser.h"
+#define BUFSIZ 512
 
 using namespace std;
 
@@ -15,6 +15,7 @@ void Proxy::close_connection(int fd_index) {
         rev_conns.erase(fd);
         conns.erase(otherfd);
     }
+    
 
     fds.erase(fds.begin() + fd_index);
     close(fd);
@@ -30,7 +31,53 @@ void Proxy::close_connection(int fd_index) {
 
 }
 
-void Proxy::handle_connection(int index) {
+void Proxy::handle_cacheable_connection(int index) {
+    HTTP_Request request = clients_requests[fds[index].fd];
+    CacheEntry entry;
+    Cache::get(request.method, request.path, entry);
+    if (Cache::is_uploaded(request.method, request.path)) {
+        cerr << "Cache hit: " << request.path << endl;
+        write(fds[index].fd, entry.response.c_str(), entry.response.size());
+        return;
+    } else {
+        // cerr << "Cache miss: " << request.path << endl;
+        size_t size = entry.size == -1 ? BUFSIZ : entry.size;
+        char buffer[size];
+        ssize_t dataRead;
+
+        int from = fds[index].fd;
+        int to = conns.count(from) ? conns[from] : rev_conns[from];
+
+        if ((dataRead = read(from, buffer, size)) > 0) {
+            write(to, buffer, dataRead);
+            entry.response += buffer;
+
+            if (entry.response.size() > Cache::MAX_CACHEABLE_SIZE) {
+                clients_requests.erase(from);
+                cerr << "Erasing\n";
+                Cache::delete_entry(request.method, request.path);
+            }
+
+            if (entry.response.size() >= entry.size && entry.size != -1) 
+            {
+                cerr << entry.response.size() << " " << entry.size << endl;
+                entry.uploaded = true;
+            }
+
+        } else if (dataRead == 0) {
+            cerr << "End of reading from serv\n" << entry.response << endl;
+            entry.uploaded = true;
+            close_connection(index);
+        } else if (dataRead == -1) {
+            perror("read");
+            cerr << "Failure\n"; 
+            Cache::delete_entry(request.method, request.path);
+            close_connection(index);
+        }
+    } 
+}
+
+void Proxy::handle_uncacheable_connection(int index) {
     char buffer[BUFSIZ];
     ssize_t dataRead;
 
@@ -47,60 +94,34 @@ void Proxy::handle_connection(int index) {
     }
 }
 
-string Proxy::accumulate_response(int fd) {
-    string response;
-    char buffer[BUFSIZ];
-    size_t total_size = 0;
-    const size_t MAX_RESPONSE_SIZE = 100 * 1024 * 1024;
-
-    while (response.find("\r\n\r\n") == string::npos) {
-        ssize_t bytes_read = read(fd, buffer, BUFSIZ);
-        if (bytes_read <= 0) break;
-
-        total_size += bytes_read;
-        if (total_size > MAX_RESPONSE_SIZE) {
-            cerr << "Response too large to handle\n";
-            return "";
-        }
-
-        response.append(buffer, bytes_read);
-    }
-    return response;
-}
-
 int Proxy::remote_connect(int clientfd) {
-    char buffer[BUFSIZ];
+    char buffer[BUFSIZ] = {0};
     string accumulated_request;
 
-    while (true) {
+    while (accumulated_request.find("\r\n") == string::npos) {
         ssize_t bytes_read = read(clientfd, buffer, BUFSIZ);
         if (bytes_read < 0) {
             perror("Read from client");
             return -1;
         }
         if (bytes_read == 0) {
-            cerr << "Client closed connection before complete request" << endl;
+            cerr << "Client closed connection before complete request\n";
             return -1;
         }
 
         accumulated_request.append(buffer, bytes_read);
-
-        if (accumulated_request.find("\r\n\r\n") != string::npos) {
-            break;
-        }
     }
 
     HTTP_Request request;
-    if (!HTTP_Parser::parse_HTTP_Request(accumulated_request, request)) {
-        cerr << "Failed to parse HTTP request" << endl;
+    if (!HTTP_Parser::parse_HTTP_Request_Header(accumulated_request, request)) {
+        cerr << "Failed to parse HTTP header\n";
         return -1;
     }
 
     if (request.version != "HTTP/1.0") {
         string responce = "HTTP/1.0 505 Version Not Supported\r\n\r\n";
         cerr << request.path << ": " << request.version << " Version not supported\n";
-        write(clientfd, responce.c_str(), responce.length());
-        close(clientfd);
+                write(clientfd, responce.c_str(), responce.length());
         return -1;
     }
 
@@ -110,29 +131,45 @@ int Proxy::remote_connect(int clientfd) {
         string responce = "HTTP/1.0 405 Not Implemented\r\n\r\n";
         cerr << request.path << ": " << request.method << " Method not supported\n";
         write(clientfd, responce.c_str(), responce.length());
-        close(clientfd);
         return -1;
     }
 
-    // if (request.method == "GET") {
-    //     string cached_response;
-    //     string cache_key = request.host + request.path;
+    if (request.path.find("https://") != string::npos) {
+        string responce = "HTTPS/1.0 400 Bad Request\r\n\r\n";
+        write(clientfd, responce.c_str(), responce.length());
+        return -1;
+    }
 
-    //     if (request.headers.count("Content-Length")) {
-    //         size_t content_length = stoll(request.headers["Content-Length"]);
-    //         if (content_length > MAX_CACHEABLE_SIZE) {
-    //             cerr << "File too large to cache: " << content_length << " bytes\n";
-    //             string response = "HTTP/1.0 413 Request Entity Too Large\r\n\r\n";
-    //             write(clientfd, response.c_str(), response.length());
-    //             return -1;
-    //         }
-    //     }
 
-    //     if (cache.get(cache_key, cached_response)) {
-    //         write(clientfd, cached_response.c_str(), cached_response.length());
-    //         return -1;
-    //     }
-    // }
+    while (accumulated_request.find("\r\n\r\n") == string::npos) {
+        ssize_t bytes_read = read(clientfd, buffer, BUFSIZ);
+        if (bytes_read < 0) {
+            perror("Read from client");
+            return -1;
+        }
+        if (bytes_read == 0) {
+            cerr << "Client closed connection before complete request\n";
+            return -1;
+        }
+
+        accumulated_request.append(buffer, bytes_read);
+    }
+
+    if (!HTTP_Parser::parse_HTTP_Request_Header(accumulated_request, request)) {
+        cerr << "Failed to parse HTTP request\n";
+        return -1;
+    }
+
+    CacheEntry response;
+
+    if (request.method == "GET" || request.method == "HEAD") {
+        if (Cache::get(request.method, request.path, response) 
+        && Cache::is_uploaded(request.method, request.path)) {
+            cerr << "Already in cache " << request.method + " " + request.path << endl;
+            write(clientfd, response.response.c_str(), response.response.size());
+            return -1;
+        }
+    }
 
     string remote_host;
     int remote_port;
@@ -149,12 +186,6 @@ int Proxy::remote_connect(int clientfd) {
         remote_host = request.host;
         remote_port = 80;
     }
-
-    string modified_request = request.method + " " + request.path + " " + request.version + "\r\n";
-    for (const auto& header : request.headers) {
-        modified_request += header.first + ": " + header.second + "\r\n";
-    }
-    modified_request += "\r\n";
 
     struct hostent* host = gethostbyname(remote_host.data());
     if (host == NULL) {
@@ -180,18 +211,87 @@ int Proxy::remote_connect(int clientfd) {
         return -1;
     }
 
-    if (write(remotefd, modified_request.c_str(), modified_request.length()) < 0) {
+    if (write(remotefd, accumulated_request.c_str(), accumulated_request.length()) < 0) {
         perror("write to remote server");
         close(remotefd);
         return -1;
     }
 
-    // if (request.method == "GET" || request.method == "HEAD") {
-    //     string response = accumulate_response(remotefd);
-    //     // string cache_key = request.host + request.path;
-    //     // cache.put(cache_key, response);
-    //     write(clientfd, response.c_str(), response.length());
-    // }
+    memset(buffer, 0, BUFSIZ);
+    string accumulated_responce;
+    
+    while (accumulated_responce.find("\r\n") == string::npos) {
+        ssize_t bytes_read = read(remotefd, buffer, BUFSIZ);
+        if (bytes_read < 0) {
+            perror("Read from server");
+            write(clientfd, error_page.c_str(), error_page.length());
+            close(remotefd);
+            return -1;
+        }
+
+        if (bytes_read == 0) {
+            cerr << "Server closed connection before complete request\n";
+            return -1;  
+        }
+
+        accumulated_responce.append(buffer, bytes_read);
+    }
+
+    HTTP_Responce server_responce;
+    if (!HTTP_Parser::parse_HTTP_Responce_Header(accumulated_responce, server_responce)) {
+        cerr << "Failed to parse HTTP response header\n";
+        close(remotefd);
+        return -1;
+    }
+
+    if (!(server_responce.status_code == 200) || !(server_responce.status_message == "OK")) {
+        write(clientfd, accumulated_responce.c_str(), accumulated_responce.length());
+        cerr << "Server response: " << server_responce.status_code << " " << server_responce.status_message << endl;
+        close(remotefd);
+        return -1;
+    }
+
+    while (accumulated_responce.find("\r\n\r\n") == string::npos) {
+        ssize_t bytes_read = read(remotefd, buffer, BUFSIZ);
+        if (bytes_read < 0) {
+            perror("Read from server");
+            return -1;
+        }
+
+        if (bytes_read == 0) {
+            cerr << "Server closed connection before complete request\n";
+            return -1;  
+        }
+
+        accumulated_responce.append(buffer, bytes_read);
+    }
+
+    if (!HTTP_Parser::parse_HTTP_Responce(accumulated_responce, server_responce)) {
+        cerr << "Failed to parse HTTP response\n";
+        close(remotefd);
+        return -1;
+    }
+
+    if (request.method == "GET" || request.method == "HEAD") {
+        size_t content_length = -1;
+        if (!server_responce.headers["Content-Length"].empty()) {
+            content_length = stoi(server_responce.headers["Content-Length"]);
+            content_length += accumulated_responce.find("\r\n\r\n") + 4;
+            if (content_length > Cache::MAX_CACHEABLE_SIZE) {
+                write(clientfd, accumulated_responce.c_str(), accumulated_responce.length());
+                return remotefd;
+            }
+        } 
+        Cache::put(request.method, request.path, accumulated_responce, content_length);
+    } else {
+        write(clientfd, accumulated_responce.c_str(), accumulated_responce.length());
+
+        return remotefd;
+    }
+    //cerr << accumulated_responce << endl;
+    write(clientfd, accumulated_responce.c_str(), accumulated_responce.length());
+
+    clients_requests[remotefd] = request;
 
     return remotefd;
 }
@@ -230,7 +330,7 @@ void Proxy::run() {
     fds.push_back({listenfd, POLLIN, 0});
 
     while (working_flag) {
-        cache.cleanup();
+        Cache::cleanup();
         int ret = poll(fds.data(), fds.size(), -1);
         if (ret == -1) {
             perror("Poll");
@@ -251,7 +351,7 @@ void Proxy::run() {
             }
 
             if (fds.size() >= MAX_CONNS * 2 + 1) {
-                fprintf(stderr, "Too many connections\n");
+                cerr << "Too many connections\n";
                 close(remotefd);
                 close(clientfd);
                 continue;
@@ -264,8 +364,18 @@ void Proxy::run() {
         }
 
         for(size_t i = 1; i < fds.size(); i++) {
-            if (fds[i].revents & POLLIN)
-                handle_connection(i);
+            if (fds[i].revents & POLLIN) {
+                if (clients_requests.count(fds[i].fd)) {
+                    HTTP_Request request = clients_requests[fds[i].fd];
+                    if (request.method == "GET" || request.method == "HEAD") {
+                        handle_cacheable_connection(i);
+                    } else {
+                        handle_uncacheable_connection(i);
+                    }
+                } else {
+                    handle_uncacheable_connection(i);
+                }
+            }
         }
     }
 }

@@ -8,6 +8,13 @@
 
 using namespace std;
 
+struct HTTP_Responce {
+    string version;
+    int status_code;
+    string status_message;
+    map<string, string> headers;
+};
+
 struct HTTP_Request {
     string method;
     string version;
@@ -23,6 +30,9 @@ class HTTP_Parser {
 public:
     HTTP_Parser();
     static bool parse_HTTP_Request(const string& request, HTTP_Request& out);
+    static bool parse_HTTP_Responce(const string& request, HTTP_Responce& out);
+    static bool parse_HTTP_Request_Header(const string& request, HTTP_Request& out);
+    static bool parse_HTTP_Responce_Header(const string& request, HTTP_Responce& out);
 };
 
 #endif
