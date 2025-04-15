@@ -2,7 +2,7 @@
 
 string HTTP_Parser::trim(const string& str) {
     size_t start = str.find_first_not_of(" \t");
-    if (start == string::npos) 
+    if (start == string::npos)
         return "";
 
     size_t end = str.find_last_not_of(" \t");
@@ -50,11 +50,11 @@ bool HTTP_Parser::parse_HTTP_Request(const string& request, HTTP_Request& out) {
 string HTTP_Parser::parse_HTTP_Path(string& request) {
     size_t path_start = request.find("http://");
     if (path_start != string::npos) {
-        path_start += 7;    
+        path_start += 7;
     } else {
         path_start = 0;
     }
-    
+
     size_t path_end = request.find('/', path_start);
     if (path_end == string::npos) {
         return request.substr(path_start);

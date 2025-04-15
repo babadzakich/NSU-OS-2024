@@ -1,5 +1,4 @@
 #include "Proxy.h"
-#define BUFSIZ 512
 
 using namespace std;
 
@@ -15,7 +14,6 @@ void Proxy::close_connection(int fd_index) {
         rev_conns.erase(fd);
         conns.erase(otherfd);
     }
-    
 
     fds.erase(fds.begin() + fd_index);
     close(fd);
@@ -34,48 +32,62 @@ void Proxy::close_connection(int fd_index) {
 void Proxy::handle_cacheable_connection(int index) {
     HTTP_Request request = clients_requests[fds[index].fd];
     CacheEntry entry;
-    Cache::get(request.method, request.path, entry);
-    if (Cache::is_uploaded(request.method, request.path)) {
-        cerr << "Cache hit: " << request.path << endl;
-        write(fds[index].fd, entry.response.c_str(), entry.response.size());
-        return;
-    } else {
-        // cerr << "Cache miss: " << request.path << endl;
-        size_t size = entry.size == -1 ? BUFSIZ : entry.size;
-        char buffer[size];
-        ssize_t dataRead;
+    Cache::get(request.path, entry);
 
-        int from = fds[index].fd;
-        int to = conns.count(from) ? conns[from] : rev_conns[from];
+    size_t size = entry.has_size ? entry.body_size : BUFSIZ;
+    char buffer[size];
+    ssize_t dataRead;
 
-        if ((dataRead = read(from, buffer, size)) > 0) {
-            write(to, buffer, dataRead);
-            entry.response += buffer;
+    int from = fds[index].fd;
+    int to = conns.count(from) ? conns[from] : rev_conns[from];
 
-            if (entry.response.size() > Cache::MAX_CACHEABLE_SIZE) {
-                clients_requests.erase(from);
-                cerr << "Erasing\n";
-                Cache::delete_entry(request.method, request.path);
+    if ((dataRead = read(from, buffer, size)) > 0) {
+        Cache::append(request.path, string(buffer, dataRead));
+
+        if (entry.body.size() > Cache::MAX_CACHEABLE_SIZE) {
+            clients_requests.erase(from);
+            cerr << "Erasing\n";
+            if (request.method == "GET") {
+                write(to, entry.body.c_str(), entry.body.size());
             }
-
-            if (entry.response.size() >= entry.size && entry.size != -1) 
-            {
-                cerr << entry.response.size() << " " << entry.size << endl;
-                entry.uploaded = true;
-            }
-
-        } else if (dataRead == 0) {
-            cerr << "End of reading from serv\n" << entry.response << endl;
-            entry.uploaded = true;
-            close_connection(index);
-        } else if (dataRead == -1) {
-            perror("read");
-            cerr << "Failure\n"; 
-            Cache::delete_entry(request.method, request.path);
-            close_connection(index);
+            Cache::delete_entry(request.path);
         }
-    } 
+
+        if (entry.has_size && entry.body.size() >= entry.body_size)
+        {
+            cerr << "Wrote everything: " << entry.body.size() << " " << entry.body_size << endl;
+            Cache::set_uploaded(request.path, true);
+        }
+    } else if (dataRead == 0) {
+        cerr << "End of reading from serv\n" << endl;
+        Cache::set_uploaded(request.path, true);
+        string responce;
+        if (request.method == "HEAD") {
+            responce = entry.head;
+            cerr << "HEAD Cache hit " + request.path << endl;
+        } else {
+            responce = entry.head + entry.body;
+            cerr << "GET Cache hit: " + request.path << endl;
+        }
+        write(to, responce.c_str(), responce.size());
+        for (auto& pair : awaiting_requests[request.path]) {
+            if (pair.first == "GET") {
+                write(pair.second, responce.c_str(), responce.size());
+            } else if (pair.first == "HEAD") {
+                write(pair.second, entry.head.c_str(), entry.head.size());
+            }
+            close(pair.second);
+        }
+        awaiting_requests.erase(request.path);
+        close_connection(index);
+    } else if (dataRead == -1) {
+        perror("Cacheable read");
+        cerr << entry.head << endl;
+        Cache::delete_entry(request.path);
+        close_connection(index);
+    }
 }
+
 
 void Proxy::handle_uncacheable_connection(int index) {
     char buffer[BUFSIZ];
@@ -89,7 +101,7 @@ void Proxy::handle_uncacheable_connection(int index) {
     } else if (dataRead == 0){
         close_connection(index);
     } else if (dataRead == -1) {
-        perror("read");
+        perror("Uncacheable read");
         close_connection(index);
     }
 }
@@ -114,19 +126,19 @@ int Proxy::remote_connect(int clientfd) {
 
     HTTP_Request request;
     if (!HTTP_Parser::parse_HTTP_Request_Header(accumulated_request, request)) {
-        cerr << "Failed to parse HTTP header\n";
+        cerr << "Failed to parse HTTP request header\n";
         return -1;
     }
 
     if (request.version != "HTTP/1.0") {
         string responce = "HTTP/1.0 505 Version Not Supported\r\n\r\n";
         cerr << request.path << ": " << request.version << " Version not supported\n";
-                write(clientfd, responce.c_str(), responce.length());
+        write(clientfd, responce.c_str(), responce.length());
         return -1;
     }
 
-    if (request.method != "GET" && request.method != "POST" 
-        && request.method != "HEAD" && request.method != "PUT" 
+    if (request.method != "GET" && request.method != "POST"
+        && request.method != "HEAD" && request.method != "PUT"
         && request.method != "POST") {
         string responce = "HTTP/1.0 405 Not Implemented\r\n\r\n";
         cerr << request.path << ": " << request.method << " Method not supported\n";
@@ -155,7 +167,7 @@ int Proxy::remote_connect(int clientfd) {
         accumulated_request.append(buffer, bytes_read);
     }
 
-    if (!HTTP_Parser::parse_HTTP_Request_Header(accumulated_request, request)) {
+    if (!HTTP_Parser::parse_HTTP_Request(accumulated_request, request)) {
         cerr << "Failed to parse HTTP request\n";
         return -1;
     }
@@ -163,11 +175,23 @@ int Proxy::remote_connect(int clientfd) {
     CacheEntry response;
 
     if (request.method == "GET" || request.method == "HEAD") {
-        if (Cache::get(request.method, request.path, response) 
-        && Cache::is_uploaded(request.method, request.path)) {
-            cerr << "Already in cache " << request.method + " " + request.path << endl;
-            write(clientfd, response.response.c_str(), response.response.size());
-            return -1;
+        if (Cache::get(request.path, response)) {
+            cerr << "Cache record found " << request.method + " " + request.path << endl;
+            if (request.method == "HEAD") {
+                string head = response.head;
+                cerr << "HEAD Cache hit " + request.path << endl;
+                write(clientfd, head.c_str(), head.length());
+                return -1;
+            } else { 
+                if (Cache::is_uploaded(request.path)) {
+                    cerr << "GET Cache hit: " + request.path << endl;
+                    write(clientfd, (response.head + response.body).c_str(), response.head.size() + response.body.size());
+                    return -1;
+                } else {
+                    awaiting_requests[request.path].push_back({request.method, clientfd});
+                    return -2;
+                }
+            }
         }
     }
 
@@ -199,6 +223,13 @@ int Proxy::remote_connect(int clientfd) {
         return -1;
     }
 
+    timeval timeout{.tv_sec = 5, .tv_usec = 0};
+    if (setsockopt(remotefd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0) {
+        perror("setsockopt");
+        close(remotefd);
+        return -1;
+    }
+
     struct sockaddr_in remote_in;
     memset(&remote_in, 0, sizeof(remote_in));
     remote_in.sin_family = AF_INET;
@@ -219,7 +250,7 @@ int Proxy::remote_connect(int clientfd) {
 
     memset(buffer, 0, BUFSIZ);
     string accumulated_responce;
-    
+
     while (accumulated_responce.find("\r\n") == string::npos) {
         ssize_t bytes_read = read(remotefd, buffer, BUFSIZ);
         if (bytes_read < 0) {
@@ -231,7 +262,7 @@ int Proxy::remote_connect(int clientfd) {
 
         if (bytes_read == 0) {
             cerr << "Server closed connection before complete request\n";
-            return -1;  
+            return -1;
         }
 
         accumulated_responce.append(buffer, bytes_read);
@@ -260,7 +291,7 @@ int Proxy::remote_connect(int clientfd) {
 
         if (bytes_read == 0) {
             cerr << "Server closed connection before complete request\n";
-            return -1;  
+            return -1;
         }
 
         accumulated_responce.append(buffer, bytes_read);
@@ -273,30 +304,49 @@ int Proxy::remote_connect(int clientfd) {
     }
 
     if (request.method == "GET" || request.method == "HEAD") {
-        size_t content_length = -1;
+        size_t content_length = 0;
+        bool has_size = false;
         if (!server_responce.headers["Content-Length"].empty()) {
+            cerr << "Content-Length header found\n";
+            has_size = true;
             content_length = stoi(server_responce.headers["Content-Length"]);
-            content_length += accumulated_responce.find("\r\n\r\n") + 4;
             if (content_length > Cache::MAX_CACHEABLE_SIZE) {
+                cerr << "Content-Length is too big\n";
                 write(clientfd, accumulated_responce.c_str(), accumulated_responce.length());
                 return remotefd;
             }
-        } 
-        Cache::put(request.method, request.path, accumulated_responce, content_length);
+        }
+        string head = accumulated_responce.substr(0, accumulated_responce.find("\r\n\r\n") + 4);
+        
+        string body;
+        if (accumulated_responce.find("\r\n\r\n") + 4 < accumulated_responce.size()) {
+            body = accumulated_responce.substr(accumulated_responce.find("\r\n\r\n") + 4);
+        } else {
+            body = "";
+        }
+        Cache::put(request.path, head, body, content_length, has_size);
+        if (request.method == "HEAD") {
+            write(clientfd, head.c_str(), head.length());
+            return -1;
+        }
     } else {
         write(clientfd, accumulated_responce.c_str(), accumulated_responce.length());
-
         return remotefd;
     }
-    //cerr << accumulated_responce << endl;
-    write(clientfd, accumulated_responce.c_str(), accumulated_responce.length());
 
     clients_requests[remotefd] = request;
-
     return remotefd;
 }
 
 Proxy::Proxy(int listen_port) {
+    fstream errorpage("errorpage.html");
+
+    string line;
+    while (getline(errorpage, line)) {
+        error_page += line + "\n";
+    }
+    errorpage.close();
+
     this->listen_port = listen_port;
     if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("Can`t create socket");
@@ -347,6 +397,8 @@ void Proxy::run() {
             int remotefd = remote_connect(clientfd);
             if (remotefd == -1) {
                 close(clientfd);
+                continue;
+            } else if (remotefd == -2) {
                 continue;
             }
 

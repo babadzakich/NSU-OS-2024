@@ -15,7 +15,7 @@ int main(int argc, char* argv[]) {
     }
 
     int listen_port;
-    
+
     if ((listen_port = atoi(argv[1])) < 1) {
         cerr << "Failed to parse listen port\n";
         return EXIT_FAILURE;
@@ -25,6 +25,6 @@ int main(int argc, char* argv[]) {
     proxy->setFlag(true);
     // signal(SIGINT, handle_sigint);
     proxy->run();
-    
+
     return EXIT_SUCCESS;
 }
