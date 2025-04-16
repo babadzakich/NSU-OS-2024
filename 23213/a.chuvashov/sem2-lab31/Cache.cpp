@@ -19,10 +19,10 @@ bool Cache::get(const string& path, CacheEntry& response) {
 
  void Cache::put(const string& path, const string& head, const string& body, size_t size, bool has_size) {
     CacheEntry entry = CacheEntry(head, body, size, time(nullptr), DEFAULT_TTL, size == body.size(), has_size);
-    cerr << "Cache size: " << size << endl;
-    cerr << "Cache head size: " << head.size() << endl;
-    cerr << "Cache body size: " << body.size() << endl;
-    cerr << "Uploaded: " << entry.uploaded << endl;
+    // cerr << "Cache size: " << size << endl;
+    // cerr << "Cache head size: " << head.size() << endl;
+    // cerr << "Cache body size: " << body.size() << endl;
+    // cerr << "Uploaded: " << entry.uploaded << endl;
     cache_storage[path] = entry;
 }
 

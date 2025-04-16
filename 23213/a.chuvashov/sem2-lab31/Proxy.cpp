@@ -52,23 +52,13 @@ void Proxy::handle_cacheable_connection(int index) {
             }
             Cache::delete_entry(request.path);
         }
-
-        if (entry.has_size && entry.body.size() >= entry.body_size)
-        {
-            cerr << "Wrote everything: " << entry.body.size() << " " << entry.body_size << endl;
-            Cache::set_uploaded(request.path, true);
-        }
     } else if (dataRead == 0) {
         cerr << "End of reading from serv\n" << endl;
         Cache::set_uploaded(request.path, true);
         string responce;
-        if (request.method == "HEAD") {
-            responce = entry.head;
-            cerr << "HEAD Cache hit " + request.path << endl;
-        } else {
-            responce = entry.head + entry.body;
-            cerr << "GET Cache hit: " + request.path << endl;
-        }
+        responce = entry.head + entry.body;
+        cerr << "GET Cache hit: " + request.path << endl;
+        
         write(to, responce.c_str(), responce.size());
         for (auto& pair : awaiting_requests[request.path]) {
             if (pair.first == "GET") {
@@ -223,13 +213,6 @@ int Proxy::remote_connect(int clientfd) {
         return -1;
     }
 
-    timeval timeout{.tv_sec = 5, .tv_usec = 0};
-    if (setsockopt(remotefd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0) {
-        perror("setsockopt");
-        close(remotefd);
-        return -1;
-    }
-
     struct sockaddr_in remote_in;
     memset(&remote_in, 0, sizeof(remote_in));
     remote_in.sin_family = AF_INET;
@@ -238,6 +221,19 @@ int Proxy::remote_connect(int clientfd) {
 
     if (connect(remotefd, (struct sockaddr*)&remote_in, sizeof(remote_in)) < 0) {
         perror("connect");
+        close(remotefd);
+        return -1;
+    }
+
+    timeval timeout{.tv_sec = 5, .tv_usec = 0};
+    if (setsockopt(remotefd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0) {
+        perror("setsockopt RCV_TIMEO");
+        close(remotefd);
+        return -1;
+    }
+
+    if (setsockopt(remotefd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != 0) {
+        perror("setsockopt SND_TIMEO");
         close(remotefd);
         return -1;
     }
@@ -391,6 +387,19 @@ void Proxy::run() {
             int clientfd;
             if ((clientfd = accept(listenfd, nullptr, nullptr)) == -1) {
                 perror("accept failure");
+                continue;
+            }
+
+            timeval client_timeout{.tv_sec = 10, .tv_usec = 0};
+            if (setsockopt(clientfd, SOL_SOCKET, SO_RCVTIMEO, &client_timeout, sizeof(client_timeout)) == -1) {
+                perror("Setsockopt client RCVTIMEO");
+                close(clientfd);
+                continue;
+            }
+
+            if (setsockopt(clientfd, SOL_SOCKET, SO_SNDTIMEO, &client_timeout, sizeof(client_timeout)) == -1) {
+                perror("Setsockopt client SNDTIMEO");
+                close(clientfd);
                 continue;
             }
 
