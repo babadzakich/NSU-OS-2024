@@ -81,6 +81,7 @@ bool HTTP_Parser::parse_HTTP_Request_Header(const string& request, HTTP_Request&
 }
 
 bool HTTP_Parser::parse_HTTP_Responce(const string& request, HTTP_Responce& out) {
+    if (parse_HTTP_Responce_Header(request, out) == false) return false;
     size_t headers_end = request.find("\r\n\r\n");
     if (headers_end == string::npos) return false;
 

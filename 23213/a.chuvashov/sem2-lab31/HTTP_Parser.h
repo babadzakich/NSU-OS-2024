@@ -13,6 +13,8 @@ struct HTTP_Responce {
     int status_code;
     string status_message;
     map<string, string> headers;
+
+    HTTP_Responce() : version(""), status_code(-1), status_message("") {}; 
 };
 
 struct HTTP_Request {
@@ -21,6 +23,8 @@ struct HTTP_Request {
     string path;
     string host;
     map<string, string> headers;
+
+    HTTP_Request() : method(""), version(""), path(""), host("") {}
 };
 
 class HTTP_Parser {

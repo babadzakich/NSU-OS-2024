@@ -23,7 +23,7 @@ int main(int argc, char* argv[]) {
     Proxy p = Proxy(listen_port);
     proxy = &p;
     proxy->setFlag(true);
-    // signal(SIGINT, handle_sigint);
+    signal(SIGINT, handle_sigint);
     proxy->run();
 
     return EXIT_SUCCESS;

@@ -17,15 +17,6 @@ bool Cache::get(const string& path, CacheEntry& response) {
     return true;
 }
 
- void Cache::put(const string& path, const string& head, const string& body, size_t size, bool has_size) {
-    CacheEntry entry = CacheEntry(head, body, size, time(nullptr), DEFAULT_TTL, size == body.size(), has_size);
-    // cerr << "Cache size: " << size << endl;
-    // cerr << "Cache head size: " << head.size() << endl;
-    // cerr << "Cache body size: " << body.size() << endl;
-    // cerr << "Uploaded: " << entry.uploaded << endl;
-    cache_storage[path] = entry;
-}
-
 void Cache::cleanup() {
     time_t now = time(nullptr);
     for (auto it = cache_storage.begin(); it != cache_storage.end();) {
@@ -50,7 +41,7 @@ void Cache::delete_entry(const string& path) {
 }
 
 
-bool Cache::append(const string& path, const string& data) {
+bool Cache::append_body(const string& path, const string& data) {
     auto it = cache_storage.find(path);
     if (it == cache_storage.end()) {
         return false;
@@ -59,9 +50,33 @@ bool Cache::append(const string& path, const string& data) {
     return true;
 }
 
+bool Cache::append_head(const string& path, const string& data) {
+    auto it = cache_storage.find(path);
+    if (it == cache_storage.end()) {
+        return false;
+    }
+    it->second.head += data;
+    return true;
+}
+
 void Cache::set_uploaded(const string& path, bool uploaded) {
     auto it = cache_storage.find(path);
     if (it != cache_storage.end()) {
         it->second.uploaded = uploaded;
+    }
+}
+
+void Cache::make_entry(const string& path) {
+    if (cache_storage.find(path) != cache_storage.end()) {
+        return;
+    }
+    cache_storage[path] = CacheEntry();
+}
+
+void Cache::set_size(const string& path, size_t size) {
+    auto it = cache_storage.find(path);
+    if (it != cache_storage.end()) {
+        it->second.body_size = size;
+        it->second.has_size = true;
     }
 }

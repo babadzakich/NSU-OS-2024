@@ -19,9 +19,7 @@ struct CacheEntry {
     bool uploaded;
     bool has_size;
 
-    CacheEntry() : head(""), body(""), body_size(0), timestamp(0), ttl(0), uploaded(false), has_size(false) {}
-    CacheEntry(const string& h, const string& b, size_t s, time_t t, int ttl_val, bool u, bool c)
-        : head(h), body(b), body_size(s), timestamp(t), ttl(ttl_val), uploaded(u), has_size(c) {}
+    CacheEntry() : head(""), body(""), body_size(0), timestamp(time(nullptr)), ttl(300), uploaded(false), has_size(false) {}
 };
 
 class Cache {
@@ -31,10 +29,12 @@ private:
 public:
     static const size_t MAX_CACHEABLE_SIZE = 50 * 1024 * 1024;
 
-    static bool append(const string& path, const string& data);
+    static bool append_head(const string& path, const string& data);
+    static bool append_body(const string& path, const string& data);
     static void set_uploaded(const string& path, bool uploaded);
+    static void set_size(const string& path, size_t size);
+    static void make_entry(const string& path);
     static bool get(const string& path, CacheEntry& response);
-    static void put(const string& path, const string& head, const string& body, size_t size, bool has_size);
     static void delete_entry(const string& path);
     static bool is_uploaded(const string& path);
     static void cleanup();

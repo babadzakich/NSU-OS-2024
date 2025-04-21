@@ -19,6 +19,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/time.h>
+#include <fcntl.h>
 
 #include "Cache.h"
 #include "HTTP_Parser.h"
@@ -32,7 +33,9 @@ private:
     vector<struct pollfd> fds;
     unordered_map<int, int> conns, rev_conns;
     unordered_map<int, HTTP_Request> clients_requests;
-    unordered_map<string, vector<pair<string, int>>> awaiting_requests; 
+    unordered_map<int, pair<string, bool>> unprocessed_servers_responses;
+    unordered_map<string, vector<pair<string, int>>> awaiting_requests;
+    unordered_map<int, pair<string, bool>> unprocessed_requests;
 
     string error_page;
     int listenfd;
@@ -41,11 +44,19 @@ private:
 
     void close_connection(int fd_index);
 
-    void handle_uncacheable_connection(int index);
+    void get_uncacheable_body(int index);
 
-    void handle_cacheable_connection(int index);
+    void get_cacheable_body(int index);
 
-    int remote_connect(int clientfd);
+    void remote_connect(int index);
+
+    int connect_to_remote_server(const string& host, int port, int clientfd);
+
+    int request_first_line(int index);
+
+    int request_all_lines(int index);
+
+    void get_server_response(int index);
 
 public:
     Proxy(int listen_port);
